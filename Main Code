@@ -1,0 +1,1070 @@
+import pygame, math, random, sys, os
+from collections import deque
+
+SMOKE = "--smoke" in sys.argv
+if SMOKE: os.environ["SDL_VIDEODRIVER"] = "dummy"
+pygame.init()
+W, H, RES = 960, 600, 4
+NR = W // RES
+TANH = math.tan(math.radians(33))
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("Poo Poo Strike 3D")
+clock = pygame.time.Clock()
+F = pygame.font.SysFont("arial", 16, bold=True); FS = pygame.font.SysFont("arial", 13, bold=True)
+FM = pygame.font.SysFont("arial", 26, bold=True); FB = pygame.font.SysFont("arial", 46, bold=True)
+ORANGE, BLUE = (255, 140, 40), (70, 140, 255)
+WIN_ROUNDS, ROUND_TIME, BOMB_TIME, PLANT_T, DEFUSE_T, BUY_TIME = 6, 100, 35, 3.0, 5.0, 12
+
+# ------------------------------------------------------------------ weapons
+WEAPONS = [
+    dict(n="Water Pistol", dmg=22, cd=.30, spr=.010, pel=1, cost=0, col=(90, 170, 255), th=16, rec=.25, bm=1.3),
+    dict(n="Slime SMG", dmg=15, cd=.09, spr=.030, pel=1, cost=1200, col=(90, 230, 60), th=22, rec=.12, bm=1.6),
+    dict(n="Potato Launcher", dmg=58, cd=.60, spr=.018, pel=1, cost=2200, col=(170, 120, 60), th=34, rec=.4, bm=1.2),
+    dict(n="Pillow Blaster", dmg=13, cd=.95, spr=.090, pel=8, cost=1500, col=(245, 245, 255), th=30, rec=.5, bm=1.2),
+    dict(n="Jelly Bean Sniper", dmg=130, cd=1.4, spr=.002, pel=1, cost=3000, col=(255, 60, 180), th=14, rec=.8, bm=1.1),
+]
+
+WEAPONS += [
+    dict(n="Squirt Magnum", dmg=55, cd=.55, spr=.006, pel=1, cost=700, col=(80, 200, 255), th=20, rec=.4, bm=1.3),
+    dict(n="Dart Blaster", dmg=20, cd=.16, spr=.02, pel=1, cost=500, col=(255, 200, 60), th=18, rec=.15, bm=1.5),
+    dict(n="Marshmallow Rifle", dmg=28, cd=.10, spr=.022, pel=1, cost=2700, col=(255, 190, 220), th=28, rec=.15, bm=1.5),
+]
+SECOND = {0, 5, 6}
+UTIL = {'slime': ("Slime Grenade", 300, (90, 230, 60)), 'bubble': ("Bubble Smoke", 300, (200, 230, 255)), 'glitter': ("Glitter Bomb", 200, (255, 220, 80))}
+HGT = {8: .25, 9: .5}          # stairs / raised platforms (jump onto them)
+PCOL = {0: (120, 190, 255), 1: (90, 230, 60), 2: (170, 120, 60), 3: (255, 255, 255), 4: (255, 60, 180), 5: (120, 220, 255), 6: (255, 200, 60), 7: (255, 190, 220)}
+
+# ------------------------------------------------------------------ map (48x36 house)
+MW, MH = 48, 36
+grid = [[1] * MW for _ in range(MH)]
+def carve(x0, y0, x1, y1, v=0):
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1): grid[y][x] = v
+for r in [(2, 2, 16, 16), (2, 20, 16, 33), (18, 2, 28, 33), (30, 2, 45, 12), (30, 14, 45, 20), (30, 22, 45, 33)]: carve(*r)
+for r in [(8, 17, 10, 19), (17, 7, 17, 9), (17, 26, 17, 28), (29, 6, 29, 8), (29, 16, 29, 18), (29, 27, 29, 29),
+          (36, 13, 39, 13), (36, 21, 39, 21)]: carve(*r)
+for r in [(4, 23, 8, 24, 2), (11, 29, 13, 30, 3), (3, 3, 6, 6, 7), (22, 9, 23, 10, 6), (24, 22, 25, 23, 6),
+          (35, 6, 39, 7, 5), (31, 2, 34, 3, 5), (35, 16, 39, 17, 3), (33, 30, 37, 31, 4)]: carve(*r)
+for r in [(42, 22, 45, 23, 9), (40, 22, 41, 23, 8), (43, 10, 45, 11, 9), (41, 10, 42, 11, 8), (37, 26, 38, 27, 3), (36, 4, 37, 5, 3),
+          (20, 18, 21, 19, 6), (26, 26, 27, 27, 6), (41, 18, 42, 19, 3)]: carve(*r)
+FURN = {2: (150, 105, 200), 3: (160, 110, 65), 4: (170, 215, 240), 5: (210, 210, 215), 6: (170, 150, 120), 7: (240, 120, 160)}
+def zone(x, y):
+    if x < 17: return (120, 150, 215) if y >= 17 else (190, 140, 210)
+    if x < 30: return (225, 205, 160)
+    return (240, 205, 95) if y < 13 else (235, 150, 150) if y < 21 else (110, 205, 195)
+WALLCOL = [[zone(x, y) if grid[y][x] == 1 else FURN.get(grid[y][x], (150, 100, 60)) for x in range(MW)] for y in range(MH)]
+SITES = {'A': (42.5, 28.5), 'B': (41.5, 6.5)}
+SNAME = {'A': 'TOILET', 'B': 'CHOCOLATE CAKE'}
+SPOTS = {'A': [(40.5, 25.5), (43.5, 24.5), (39.5, 29.5), (44.5, 31.5), (40.5, 31.5)],
+         'B': [(38.5, 9.5), (43.5, 9.5), (40.5, 4.5), (35.5, 10.5), (44.5, 4.5)]}
+WATCH = {'A': (37.5, 21.5), 'B': (37.5, 13.5)}
+HOLD = {0: (40.5, 26.5), 1: (39.5, 8.5), 2: (24.5, 14.5), 3: (33.5, 17.5)}
+WATCH_D = {0: (30.5, 28.5), 1: (30.5, 7.5), 2: (23.5, 27.5), 3: (30.5, 17.5)}
+SPAWN = {'A': [(4.5, 27.5), (6.5, 27.5), (4.5, 30.5), (8.5, 30.5)],
+         'D': [(33.5, 19.5), (41.5, 17.5), (32.5, 15.5), (43.5, 19.5)]}
+SITE_R = 2.6
+HOLD[4] = (42.5, 9.5); WATCH_D[4] = (30.5, 7.5); HOLD[3] = (34.5, 24.5); WATCH_D[3] = (30.5, 28.0); SPAWN['A'].append((6.5, 32.5)); SPAWN['D'].append((38.5, 19.5))
+def zname(x, y):
+    if grid[int(y)][int(x)] in HGT: return 'HIGH GROUND'
+    if x < 17: return 'Living Room' if y >= 17 else 'Bedroom'
+    if x < 30: return 'Hall'
+    return 'Kitchen (Cake B)' if y < 13 else 'Dining Room' if y < 21 else 'Bathroom (Toilet A)'
+
+def solid(x, y):
+    ix, iy = int(x), int(y)
+    return not (0 <= ix < MW and 0 <= iy < MH) or grid[iy][ix] != 0
+def free(x, y, r=.28): return not (solid(x - r, y - r) or solid(x + r, y - r) or solid(x - r, y + r) or solid(x + r, y + r))
+def try_move(a, dx, dy):
+    m = False
+    if free(a.x + dx, a.y): a.x += dx; m = True
+    if free(a.x, a.y + dy): a.y += dy; m = True
+    return m
+
+def ray(px, py, dx, dy):
+    mx, my = int(px), int(py)
+    ddx = abs(1 / dx) if dx else 1e30; ddy = abs(1 / dy) if dy else 1e30
+    if dx < 0: sx, sdx = -1, (px - mx) * ddx
+    else: sx, sdx = 1, (mx + 1 - px) * ddx
+    if dy < 0: sy, sdy = -1, (py - my) * ddy
+    else: sy, sdy = 1, (my + 1 - py) * ddy
+    while True:
+        if sdx < sdy: sdx += ddx; mx += sx; side = 0
+        else: sdy += ddy; my += sy; side = 1
+        if not (0 <= mx < MW and 0 <= my < MH):
+            return (sdx - ddx if side == 0 else sdy - ddy), side, 1, min(max(mx, 0), MW - 1), min(max(my, 0), MH - 1)
+        if grid[my][mx] and grid[my][mx] < 8: break
+    return (sdx - ddx if side == 0 else sdy - ddy), side, grid[my][mx], mx, my
+
+def ray2(px, py, dx, dy):
+    mx, my = int(px), int(py)
+    ddx = abs(1 / dx) if dx else 1e30; ddy = abs(1 / dy) if dy else 1e30
+    if dx < 0: sx, sdx = -1, (px - mx) * ddx
+    else: sx, sdx = 1, (mx + 1 - px) * ddx
+    if dy < 0: sy, sdy = -1, (py - my) * ddy
+    else: sy, sdy = 1, (my + 1 - py) * ddy
+    lows = []
+    while True:
+        if sdx < sdy: sdx += ddx; mx += sx; side = 0; dist = sdx - ddx
+        else: sdy += ddy; my += sy; side = 1; dist = sdy - ddy
+        if lows and lows[-1][1] is None: lows[-1][1] = dist
+        if not (0 <= mx < MW and 0 <= my < MH): return dist, side, 1, min(max(mx, 0), MW - 1), min(max(my, 0), MH - 1), lows
+        v = grid[my][mx]
+        if v >= 8: lows.append([dist, None, side, mx, my])
+        elif v: return dist, side, v, mx, my, lows
+
+def throw(a, kind, tx, ty, arc=1.4):
+    d = math.hypot(tx - a.x, ty - a.y)
+    G.nades.append(dict(x=a.x, y=a.y, ang=math.atan2(ty - a.y, tx - a.x), left=d, tot=max(d, .1), kind=kind, by=a, fuse=1.5, fly=True, arc=arc))
+
+def nade_dist(p, power, roll):
+    d = ((2 + power * 6) if roll else (3 + power * 11)) * (1 + G.pitch / 340 * .5)
+    return max(1.2, min(d, max(1.2, ray(p.x, p.y, math.cos(p.ang), math.sin(p.ang))[0] - .5)))
+
+def proj(p, x, y, z):
+    tanh = G.tanh; SC = TANH / tanh; e = .5 + G.z - G.crouch * .18; hz = H // 2 + int(G.pitch)
+    px, py = p.x + p.lx, p.y + p.ly; dx, dy = math.cos(p.ang), math.sin(p.ang); plx, ply = -dy * tanh, dx * tanh
+    inv = 1.0 / (plx * dy - dx * ply); sx, sy = x - px, y - py; ty = inv * (-ply * sx + plx * sy)
+    if ty < .2: return None
+    return W / 2 * (1 + inv * (dy * sx - dx * sy) / ty), hz + (e - z) * H * SC / ty, ty
+
+def draw_guide(p):
+    if not (p.alive and p.held): return
+    roll = G.roll; pw = max(p.charge, .3); d = nade_dist(p, pw, roll); c, sn = math.cos(p.ang), math.sin(p.ang); arc = 0 if roll else 1.6
+    col = UTIL[p.held][2]
+    def ok(q): return q and 0 <= q[0] < W and ZB[min(NR - 1, int(q[0] // RES))] > q[2] - .25
+    for i in range(25):
+        f = i / 24; q = proj(p, p.x + c * d * f, p.y + sn * d * f, .45 * (1 - f) + arc * 4 * f * (1 - f))
+        if ok(q): circ(col, q[0], q[1], 3)
+    lx, ly = p.x + c * d, p.y + sn * d
+    for i in range(18):
+        a = i / 18 * 2 * math.pi; q = proj(p, lx + math.cos(a) * .6, ly + math.sin(a) * .6, 0)
+        if ok(q): circ((255, 255, 255), q[0], q[1], 2)
+    rect((40, 40, 50), W // 2 - 90, H - 118, 180, 14, 4); rect((200, 200, 255) if roll else col, W // 2 - 90, H - 118, 180 * p.charge, 14, 4)
+    txt("ROLL (low, short)" if roll else "LOB (high arc)", FS, (255, 255, 255), W // 2, H - 128, True)
+    txt("hold click / G = power, aim with mouse + arrows, release = throw, hold X = roll", FS, (230, 230, 240), W // 2, H - 96, True)
+
+def draw_hitdir():
+    if G.hitt > 0 and G.player.alive:
+        p = G.player; a = angdiff(p.ang, math.atan2(G.hitsrc[1] - p.y, G.hitsrc[0] - p.x)); cx, cy = W // 2, H // 2 + 10
+        pts = [(cx + math.sin(a + o) * r, cy - math.cos(a + o) * r) for o, r in ((0, 150), (.12, 118), (-.12, 118))]
+        pygame.draw.polygon(screen, (255, 40, 40), pts)
+
+def explode(n):
+    k, x, y, by = n['kind'], n['x'], n['y'], n['by']
+    if k == 'slime':
+        for e in G.actors:
+            if e.alive and e.team != by.team:
+                d = math.hypot(e.x - x, e.y - y)
+                if d < 3.5 and los(x, y, e.x, e.y): hurt(by, e, 80 * (1 - d / 3.5) + 8)
+        G.fx.append([x, y, .5, (90, 230, 60)])
+    elif k == 'bubble': G.smokes.append((x, y, 2.6, G.t))
+    else:
+        for e in G.actors:
+            if e.alive and math.hypot(e.x - x, e.y - y) < 14 and los(x, y, e.x, e.y):
+                if human(e): G.blind = max(G.blind, 2.4 if abs(angdiff(e.ang, math.atan2(y - e.y, x - e.x))) < 1.2 else .7)
+                elif e.team != by.team: e.blind = 2.4
+        G.fx.append([x, y, .5, (255, 230, 120)])
+
+def update_nades(dt):
+    for n in G.nades[:]:
+        if n['fly']:
+            st = min(9 * dt, n['left']); nx, ny = n['x'] + math.cos(n['ang']) * st, n['y'] + math.sin(n['ang']) * st
+            if 0 < grid[int(ny)][int(nx)] < 8: n['left'] = 0
+            else: n['x'], n['y'] = nx, ny; n['left'] -= st
+            if n['left'] <= .001: n['fly'] = False
+        else:
+            n['fuse'] -= dt
+            if n['fuse'] <= 0: explode(n); G.nades.remove(n)
+    G.smokes = [s for s in G.smokes if G.t - s[3] < 12]
+    for f in G.fx: f[2] -= dt
+    G.fx = [f for f in G.fx if f[2] > 0]
+
+def smoked(ax, ay, bx, by):
+    dx, dy = bx - ax, by - ay; L2 = dx * dx + dy * dy or 1
+    for sx, sy, r, t0 in G.smokes:
+        u = max(0, min(1, ((sx - ax) * dx + (sy - ay) * dy) / L2))
+        if math.hypot(ax + dx * u - sx, ay + dy * u - sy) < r: return True
+    return False
+def los(ax, ay, bx, by):
+    dx, dy = bx - ax, by - ay; d = math.hypot(dx, dy)
+    return d < 1e-6 or (ray(ax, ay, dx / d, dy / d)[0] >= d - .1 and not (G.smokes and smoked(ax, ay, bx, by)))
+
+FIELDS = {}
+def field(goal):
+    f = FIELDS.get(goal)
+    if f: return f
+    f = [[9999] * MW for _ in range(MH)]; f[goal[1]][goal[0]] = 0; q = deque([goal])
+    while q:
+        x, y = q.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < MW and 0 <= ny < MH and grid[ny][nx] == 0 and f[ny][nx] > f[y][x] + 1:
+                f[ny][nx] = f[y][x] + 1; q.append((nx, ny))
+    FIELDS[goal] = f; return f
+def next_step(x, y, goal):
+    f = field(goal); cx, cy = int(x), int(y); best, bv = None, f[cy][cx]
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+        nx, ny = cx + dx, cy + dy
+        if grid[ny][nx] == 0 and (dx == 0 or dy == 0 or (grid[cy][nx] == 0 and grid[ny][cx] == 0)) and f[ny][nx] < bv:
+            bv, best = f[ny][nx], (nx + .5, ny + .5)
+    return best
+
+def angdiff(a, b): return (b - a + math.pi) % (2 * math.pi) - math.pi
+def turn(a, ang, rate, dt):
+    d = angdiff(a.ang, ang); a.ang += max(-rate * dt, min(rate * dt, d))
+
+# ------------------------------------------------------------------ game state
+class G: pass
+G.state, G.t, G.moving, G.dmg, G.hit, G.flash = 'title', 0, False, 0, 0, 0
+G.msg, G.feed, G.adv = ("", 0), [], .5
+G.pitch = G.jz = G.vz = G.crouch = G.ads = G.step_t = 0
+G.tanh = TANH
+G.pvx = G.pvy = G.z = G.fz = G.equip = G.sprint = G.blind = G.wx = G.wy = 0
+G.wheel, G.witems, G.nades, G.smokes, G.fx, G.parts, G.order = None, [], [], [], [], [], None
+G.oplan, G.pcar, G.cammode, G.vi, G.dt = 'A', None, 0, 0, .016
+G.lean = 0; G.skill = 1.25; G.exec_t = G.rt0 = None; G.rt_exec = False
+G.hs = G.hitt = 0; G.roll = False; G.hitsrc = (0, 0)
+ZB = [0.0] * NR
+
+class Actor:
+    def __init__(s, team, idx):
+        s.team, s.idx, s.money, s.prim, s.armor, s.w = team, idx, 1600, None, 0, 0
+        s.name, s.recoil, s.ammo, s.res, s.reload_t = "", 0, {0: 12}, {0: 36}, 0
+        s.sec, s.util, s.last_throw, s.plunger = 0, {}, -99, False
+        s.reset(0, 0)
+    def reset(s, x, y):
+        s.x, s.y, s.hp, s.alive, s.cd, s.flash = x, y, 100, True, 0, 0
+        s.vis, s.vis_t, s.target, s.react = [], random.random() * .1, None, 0
+        s.strafe, s.strafe_t, s.heard, s.last_seen = 1, 0, None, None
+        s.planting = s.defusing = False; s.blind = 0; s.throw_req = None; s.held = None; s.retreat = 0; s.lx = s.ly = 0; s.charge = 0
+
+def human(a): return a is G.player and not SMOKE
+
+def noise(x, y, team, r):
+    for e in G.actors:
+        if e.alive and e.team != team and not human(e) and math.hypot(e.x - x, e.y - y) < r:
+            e.heard = (x, y, G.t); G.intel[e.team] = (x, y, G.t)
+
+def hurt(att, vic, dmg):
+    if vic.armor > 0: vic.armor = max(0, vic.armor - dmg * .5); dmg *= .6
+    vic.hp -= dmg
+    if not human(vic) and 0 < vic.hp < 50 and vic.retreat <= 0 and random.random() < .7 and sum(1 for x in G.actors if x.team == vic.team and x.alive) > 1: vic.retreat = 2.8
+    if human(vic): G.dmg = .4; G.hitsrc = (att.x, att.y); G.hitt = 1.2
+    if att is G.player: G.hit = .25
+    if not human(vic):
+        vic.heard = (att.x, att.y, G.t); G.intel[vic.team] = (att.x, att.y, G.t)
+        if vic.target is None: vic.last_seen = (att.x, att.y, G.t)
+    if vic.hp <= 0 and vic.alive:
+        vic.alive, vic.prim, vic.armor, vic.w, vic.sec, vic.util, vic.held = False, None, 0, 0, 0, {}, None; vic.plunger = False
+        att.money = min(10000, att.money + 300)
+        G.feed.append([f"{att.name}  [{WEAPONS[att.w]['n']}]  {vic.name}", 5, ORANGE if att.team == 'A' else BLUE])
+
+def fire(a, sigma):
+    w = WEAPONS[a.w]
+    if a.cd > 0: return
+    if human(a):
+        if a.reload_t > 0: return
+        if a.ammo.get(a.w, 0) <= 0: start_reload(a); return
+        a.ammo[a.w] -= 1
+    a.cd = w['cd'] * (1 if human(a) else 1 + (w['bm'] - 1) / G.skill); a.flash = .08
+    if human(a): a.recoil = min(1, a.recoil + w['rec'])
+    noise(a.x, a.y, a.team, 16)
+    for _ in range(w['pel']):
+        ang = a.ang + random.gauss(0, sigma + w['spr'] * (1 - .5 * G.ads if human(a) else 1))
+        dx, dy = math.cos(ang), math.sin(ang)
+        ox, oy = a.x + a.lx, a.y + a.ly; dw = ray(ox, oy, dx, dy)[0]; best, bt = None, dw
+        for e in G.actors:
+            if e.alive and e.team != a.team:
+                r = (.18 if G.jz > .12 else .25 if G.crouch > .5 else .3) if human(e) else .3
+                rx, ry = e.x + e.lx - ox, e.y + e.ly - oy; t = rx * dx + ry * dy
+                if 0 < t < bt and abs(rx * dy - ry * dx) < r: best, bt = e, t
+        if best:
+            mult = 1
+            if human(a) and .5 + G.z - G.crouch * .18 + G.pitch * bt / (H * TANH / G.tanh) > .6: mult = 1.8; G.hs = .8
+            hurt(a, best, w['dmg'] * mult * (1 if human(a) else .9 + .1 * G.skill))
+
+MAG = {0: 12, 1: 30, 2: 5, 3: 6, 4: 5}
+RELOAD = {0: 1.1, 1: 1.6, 2: 2.2, 3: 2.0, 4: 2.4}
+ZOOM = {0: .8, 1: .75, 2: .7, 3: .85, 4: .3}
+MAG.update({5: 8, 6: 18, 7: 30}); RELOAD.update({5: 1.3, 6: 1.2, 7: 1.9}); ZOOM.update({5: .8, 6: .8, 7: .6})
+def buy(a, i):
+    w = WEAPONS[i]; cur = a.sec if i in SECOND else a.prim
+    if a.money >= w['cost'] and cur != i:
+        a.money -= w['cost']; a.w = i; a.ammo[i] = MAG[i]; a.res[i] = MAG[i] * 3
+        if i in SECOND: a.sec = i
+        else: a.prim = i
+def buy_plunger(a):
+    if a.team == 'D' and a.money >= 400 and not a.plunger: a.money -= 400; a.plunger = True
+
+def buy_util(a, k):
+    if a.money >= UTIL[k][1] and a.util.get(k, 0) < 2: a.money -= UTIL[k][1]; a.util[k] = a.util.get(k, 0) + 1
+
+def buy_armor(a):
+    if a.money >= 650 and a.armor < 100: a.money -= 650; a.armor = 100
+def bot_buy(a):
+    if a.prim is None:
+        opts = [i for i in (4, 7, 2, 3, 1) if WEAPONS[i]['cost'] <= a.money]
+        if opts: buy(a, random.choice(opts[:3]))
+    if a.sec == 0 and a.money >= 700 and random.random() < .5: buy(a, random.choice((5, 6)))
+    buy_armor(a)
+    for k in UTIL:
+        if random.random() < .4: buy_util(a, k)
+    if a.team == 'D' and a.money >= 400 and random.random() < .7: buy_plunger(a)
+    a.w = a.prim if a.prim is not None else a.sec
+
+def new_round():
+    G.bomb = dict(planted=False, timer=BOMB_TIME, site=None, pos=None, prog=0, defuse=0)
+    G.plan = random.choice('AB'); G.intel = {'A': None, 'D': None}; G.feed = []
+    G.state, G.timer, G.round_time, G.flash, G.over = 'buy', BUY_TIME, ROUND_TIME, 0, False
+    G.jz = G.vz = G.pitch = G.ads = G.z = G.pvx = G.pvy = G.blind = 0
+    G.nades, G.smokes, G.fx, G.order, G.wheel = [], [], [], None, None
+    G.exec_t = G.rt0 = None; G.rt_exec = False; G.lean = 0
+    cnt = {'A': 0, 'D': 0}
+    for a in G.actors:
+        x, y = SPAWN[a.team][a.idx]; a.reset(x, y); a.ang = 0 if a.team == 'A' else math.pi
+        a.w = a.prim if a.prim is not None else a.sec; a.reload_t = 0
+        for k in a.ammo: a.ammo[k], a.res[k] = MAG[k], MAG[k] * 3
+        if not human(a): bot_buy(a)
+    G.msg = (f"Plant the Poo Poo at the TOILET or the CAKE!" if G.team == 'A' else "Defend the TOILET and the CAKE!", 6)
+
+def end_round(win, msg):
+    G.state, G.timer = 'end', 4.5; G.score[win] += 1
+    G.endmsg = ("STINKERS" if win == 'A' else "CLEANERS") + " WIN THE ROUND - " + msg
+    for a in G.actors: a.money = min(10000, a.money + (3000 if a.team == win else 1900))
+    G.over = max(G.score.values()) >= WIN_ROUNDS
+
+def start_match(team):
+    G.team, G.score, G.t = team, {'A': 0, 'D': 0}, 0
+    names = {'A': ["Jelly", "Mochi", "Waffle", "Sprout", "Biscuit"], 'D': ["Bubbles", "Noodle", "Pickle", "Muffin", "Doodle"]}
+    G.actors = []
+    for tm in 'AD':
+        for i in range(5):
+            a = Actor(tm, i); a.name = names[tm][i]
+            if tm == team and i == 0: a.name = "YOU"; G.player = a
+            G.actors.append(a)
+    G.free = Actor('A', 9); G.cam = G.lastcam = G.player; G.wheel = None; G.cammode = G.vi = 0
+    if not SMOKE:
+        pygame.mouse.set_visible(False); pygame.event.set_grab(True); pygame.mouse.get_rel()
+    new_round()
+
+# ------------------------------------------------------------------ bot AI
+def can_see(a, e):
+    ex, ey = e.x + e.lx, e.y + e.ly; dx, dy = ex - a.x, ey - a.y
+    if math.hypot(dx, dy) > 1.5 and abs(angdiff(a.ang, math.atan2(dy, dx))) > 1.25: return False
+    return los(a.x, a.y, ex, ey)
+
+def go(a, gx, gy, speed, dt):
+    d = math.hypot(gx - a.x, gy - a.y)
+    if d < .25: return d
+    if d < 3 and los(a.x, a.y, gx, gy): tx, ty = gx, gy
+    else: tx, ty = next_step(a.x, a.y, (int(gx), int(gy))) or (gx, gy)
+    ang = math.atan2(ty - a.y, tx - a.x)
+    try_move(a, math.cos(ang) * speed * dt, math.sin(ang) * speed * dt)
+    turn(a, ang, 7, dt)
+    return d
+
+def combat(a, t, dt):
+    sk = G.skill; tx, ty = t.x + t.lx, t.y + t.ly; dx, dy = tx - a.x, ty - a.y; d = math.hypot(dx, dy); ta = math.atan2(dy, dx)
+    turn(a, ta, 11 * sk, dt); a.react -= dt; a.strafe_t -= dt
+    if a.strafe_t <= 0: a.strafe, a.strafe_t = random.choice((-1, 1)), random.uniform(.3, .8)
+    adv = a.team == 'A'                       # attackers push, defenders hold their angle
+    fwd = -1 if a.hp < 35 else 1 if (a.w == 3 and d > 4) else .6 if (adv and a.w in (0, 1, 2, 5, 6, 7) and d > 10) else -.6 if d < 3 else 0
+    moving = a.cd > .05                       # counter-strafe: stand still to take the shot
+    vx = fwd * math.cos(ta) * 2.2 + (a.strafe * -math.sin(ta) * 2.6 if moving else 0)
+    vy = fwd * math.sin(ta) * 2.2 + (a.strafe * math.cos(ta) * 2.6 if moving else 0)
+    if not try_move(a, vx * dt, vy * dt): a.strafe *= -1
+    if a.react <= 0 and abs(angdiff(a.ang, ta)) < .15: fire(a, (.010 + .0014 * d + (.015 if moving else 0)) / sk)
+
+def site_near(x, y): return min(SITES, key=lambda s: math.hypot(SITES[s][0] - x, SITES[s][1] - y))
+
+STAGE = {'A': (26.5, 29.5), 'B': (26.5, 7.5)}
+RETAKE = {'A': (27.5, 28.5), 'B': (27.5, 7.5)}
+LURK = (23.5, 18.5)
+def elapsed(): return ROUND_TIME - G.round_time
+
+def team_util(team, site):
+    ds = {'bubble': SITES[site], 'glitter': (31.5, 28.5) if site == 'A' else (31.5, 7.5), 'slime': SPOTS[site][0]}
+    for a in G.actors:
+        if a.team == team and a.alive and not human(a):
+            for k in ('glitter', 'bubble', 'slime'):
+                if a.util.get(k, 0) > 0: throw(a, k, *ds[k]); a.util[k] -= 1; a.last_throw = G.t
+
+def atk_goal(a):
+    b = G.bomb
+    if b['planted']: return (b['pos'] if b['defuse'] > .3 else SPOTS[b['site']][a.idx % 5]), 'cover'
+    s = G.oplan if (G.order == 'plant' and G.team == 'A') else G.plan
+    carrier = a is G.carrier
+    if a.idx == 4 and not carrier and not human(a):                 # lurker: cuts off rotations, joins late
+        if G.exec_t is None or G.t - G.exec_t < 6: return LURK, 'hold'
+        return SPOTS[s][a.idx % 5], 'cover'
+    st = STAGE[s]; off = ((a.idx % 3 - 1) * 1.4, ((a.idx // 3) % 2 - .5) * 1.6); stage = (st[0] + off[0], st[1] + off[1])
+    if G.exec_t is None or G.t < G.exec_t + 1.5 + (2.5 if carrier else 0) + .4 * (a.idx % 4): return stage, 'stage'
+    if carrier: return SITES[s], 'plant'
+    return SPOTS[s][a.idx % 5], 'cover'
+
+def def_goal(a):
+    b = G.bomb
+    if b['planted']:
+        s = b['site']
+        if not G.rt_exec and b['timer'] > 16: return RETAKE[s], 'stage'
+        return (b['pos'], 'defuse') if a is G.defuser else (SPOTS[s][a.idx % 5], 'cover')
+    i = G.intel['D']
+    if i and G.t - i[2] < 12:
+        s = site_near(i[0], i[1])
+        if a.idx == 2 or a.idx == (4 if s == 'A' else 3): return SPOTS[s][a.idx % 5], 'cover'
+    return HOLD[a.idx], 'hold'
+
+def bot_update(a, dt):
+    a.cd -= dt; a.flash -= dt; a.planting = a.defusing = False; a.vis_t -= dt
+    if a.blind > 0: a.blind -= dt; a.vis = []; a.target = None; return
+    if a.throw_req and a.util.get('bubble'):
+        throw(a, 'bubble', *a.throw_req); a.util['bubble'] -= 1; a.throw_req = None
+    if a.vis_t <= 0:
+        a.vis_t = .12; a.vis = [e for e in G.actors if e.alive and e.team != a.team and can_see(a, e)]
+    if a.retreat > 0:                                   # hurt: fall back to cover and regroup
+        a.retreat -= dt
+        if not (a.vis and min(math.hypot(e.x - a.x, e.y - a.y) for e in a.vis) < 4):
+            fb = STAGE[G.plan] if a.team == 'A' else HOLD[a.idx]; go(a, fb[0], fb[1], 3.8, dt); return
+    if a.vis:
+        t = min(a.vis, key=lambda e: (e.x - a.x) ** 2 + (e.y - a.y) ** 2)
+        if a.target is not t: a.target, a.react = t, random.uniform(.14, .26) / G.skill * 1.2
+        a.last_seen = (t.x, t.y, G.t); G.intel[a.team] = (t.x, t.y, G.t)
+        d = math.hypot(t.x - a.x, t.y - a.y)
+        if a.util.get('slime') and 5 < d < 13 and G.t - a.last_throw > 6 and random.random() < .03:
+            throw(a, 'slime', t.x, t.y); a.util['slime'] -= 1; a.last_throw = G.t
+        combat(a, t, dt); return
+    a.target = None
+    ls = a.last_seen
+    if ls and G.t - ls[2] < 5 and a.hp > 25:
+        d = math.hypot(ls[0] - a.x, ls[1] - a.y)
+        if a.util.get('slime') and 4 < d < 13 and G.t - a.last_throw > 5: throw(a, 'slime', ls[0], ls[1]); a.util['slime'] -= 1; a.last_throw = G.t
+        if go(a, ls[0], ls[1], 3.2, dt) < 1: a.last_seen = None
+        return
+    if a.heard and G.t - a.heard[2] < 2: turn(a, math.atan2(a.heard[1] - a.y, a.heard[0] - a.x), 5, dt)
+    i = G.intel[a.team]
+    if a.team == 'A' and G.exec_t is not None and not G.bomb['planted'] and i and G.t - i[2] < 3.5 and a is not G.carrier:
+        go(a, i[0], i[1], 3.0, dt); return                  # trade / crossfire on teammate contact
+    (gx, gy), mode = (atk_goal if a.team == 'A' else def_goal)(a)
+    if a.team == G.team and G.order: (gx, gy), mode = order_goal(a, (gx, gy), mode)
+    d = go(a, gx, gy, 3.4, dt)
+    if mode == 'plant' and d < 5 and a.util.get('bubble') and G.t - a.last_throw > 20:
+        throw(a, 'bubble', gx, gy); a.util['bubble'] -= 1; a.last_throw = G.t
+    if d < .6:
+        if mode == 'plant' and d < 1.4: a.planting = True
+        if mode == 'defuse' and d < 1.5: a.defusing = True
+        if mode == 'order': wx, wy = G.player.x + math.cos(G.player.ang) * 10, G.player.y + math.sin(G.player.ang) * 10
+        else: wx, wy = (WATCH[G.bomb['site'] or G.plan] if a.team == 'A' else WATCH_D[a.idx])
+        if not (a.heard and G.t - a.heard[2] < 2): turn(a, math.atan2(wy - a.y, wx - a.x), 4, dt)
+
+# ------------------------------------------------------------------ update
+def start_reload(p):
+    if p.reload_t <= 0 and p.ammo.get(p.w, 0) < MAG[p.w] and p.res.get(p.w, 0) > 0: p.reload_t = RELOAD[p.w]
+
+def pfree(x, y, r=.28):
+    for ox, oy in ((-r, -r), (r, -r), (-r, r), (r, r)):
+        ix, iy = int(x + ox), int(y + oy)
+        if not (0 <= ix < MW and 0 <= iy < MH): return False
+        v = grid[iy][ix]
+        if v and not (v in HGT and G.z >= HGT[v] - .03): return False
+    return True
+
+def player_update(p, dt):
+    k = pygame.key.get_pressed(); mx, my = pygame.mouse.get_rel(); mb = pygame.mouse.get_pressed()
+    if G.wheel: G.wx = max(-150, min(150, G.wx + mx)); G.wy = max(-150, min(150, G.wy + my)); mx = my = 0
+    p.ang += mx * .0028 * (1 - .55 * G.ads) + (k[pygame.K_RIGHT] - k[pygame.K_LEFT]) * 2.3 * dt
+    G.pitch = max(-170, min(170, G.pitch - my * .8 * (1 - .5 * G.ads) + (k[pygame.K_UP] - k[pygame.K_DOWN]) * 220 * dt))
+    ads_in = bool(mb[2] or k[pygame.K_x]) and p.reload_t <= 0 and not G.wheel and not p.held
+    G.ads += ((1 if ads_in else 0) - G.ads) * min(1, dt * 10); G.tanh = TANH * (1 - G.ads * (1 - ZOOM[p.w]))
+    G.crouch += ((1 if (k[pygame.K_LCTRL] or k[pygame.K_c]) else 0) - G.crouch) * min(1, dt * 10)
+    gh = HGT.get(grid[int(p.y)][int(p.x)], 0)
+    if k[pygame.K_SPACE] and G.z <= gh + .001 and G.vz == 0 and not G.wheel: G.vz = 3.0
+    if G.z > gh + .001 or G.vz != 0:
+        G.vz -= 9 * dt; G.z += G.vz * dt
+        if G.z <= gh: G.z, G.vz = gh, 0
+    else: G.z = gh
+    G.jz = G.z - gh
+    f, s = k[pygame.K_w] - k[pygame.K_s], k[pygame.K_d] - k[pygame.K_a]
+    sprint = bool(k[pygame.K_LSHIFT] and f > 0 and not ads_in and G.crouch < .3 and not G.wheel)
+    spd = 4.0 * (1.45 if sprint else 1) * (1 - .5 * G.crouch) * (1 - .4 * G.ads); c, sn = math.cos(p.ang), math.sin(p.ang)
+    if f or s: nn = math.hypot(f, s); tvx, tvy = (c * f - sn * s) / nn * spd, (sn * f + c * s) / nn * spd
+    else: tvx = tvy = 0
+    acc = 1.6 if G.jz > .02 else (9 if (f or s) else 6)           # momentum: slide, drift, air carry
+    G.pvx += (tvx - G.pvx) * min(1, acc * dt); G.pvy += (tvy - G.pvy) * min(1, acc * dt)
+    if pfree(p.x + G.pvx * dt, p.y): p.x += G.pvx * dt
+    else: G.pvx = 0
+    if pfree(p.x, p.y + G.pvy * dt): p.y += G.pvy * dt
+    else: G.pvy = 0
+    ln = (k[pygame.K_e] - k[pygame.K_q]) if not G.wheel else 0          # Q / E = lean and peek
+    G.lean += (ln - G.lean) * min(1, dt * 12); off = .38 * G.lean
+    rx, ry = -math.sin(p.ang) * off, math.cos(p.ang) * off
+    while abs(off) > .02 and not pfree(p.x + rx, p.y + ry): off *= .7; rx, ry = -math.sin(p.ang) * off, math.cos(p.ang) * off
+    p.lx, p.ly = (rx, ry) if abs(off) > .02 else (0, 0)
+    G.moving = math.hypot(G.pvx, G.pvy) > .8; G.step_t -= dt
+    if G.moving and G.jz <= .02 and G.step_t <= 0: noise(p.x, p.y, p.team, 12 if sprint else 3 if G.crouch > .5 else 7); G.step_t = .4
+    G.equip = max(0, G.equip - dt * 4); G.sprint += ((1 if sprint and G.moving else 0) - G.sprint) * min(1, dt * 8)
+    p.cd -= dt; p.flash -= dt; p.recoil = max(0, p.recoil - dt * 3)
+    if p.reload_t > 0:
+        p.reload_t -= dt
+        if p.reload_t <= 0:
+            take = min(MAG[p.w] - p.ammo.get(p.w, 0), p.res.get(p.w, 0)); p.ammo[p.w] = p.ammo.get(p.w, 0) + take; p.res[p.w] -= take
+    if p.held and not G.wheel:
+        roll = bool(mb[2] or k[pygame.K_x]); G.roll = roll
+        if (mb[0] or k[pygame.K_g]) and p.cd <= 0: p.charge = min(1, p.charge + dt / 1.1)
+        elif p.charge > 0 and p.util.get(p.held, 0) > 0:
+            d = nade_dist(p, p.charge, roll); throw(p, p.held, p.x + c * d, p.y + sn * d, 0 if roll else 1.6)
+            p.util[p.held] -= 1; p.cd = .7; p.held = None; p.charge = 0
+        else: p.charge = 0
+    elif mb[0] and not sprint and not G.wheel:
+        sig = (.008 + p.recoil * .06 + (.02 if G.moving else 0) + (.03 if G.jz > .02 else 0) + (.07 if p.w == 4 else 0)) * (1 - .6 * G.ads) * (1 - .35 * G.crouch)
+        fire(p, sig)
+    b = G.bomb
+    p.planting = bool(k[pygame.K_f] and p.team == 'A' and not b['planted'] and any(math.hypot(p.x - sx, p.y - sy) < SITE_R for sx, sy in SITES.values()))
+    p.defusing = bool(k[pygame.K_f] and p.team == 'D' and b['planted'] and math.hypot(p.x - b['pos'][0], p.y - b['pos'][1]) < 2)
+
+def update_play(dt):
+    G.t += dt; G.round_time -= dt; b = G.bomb
+    atk = [a for a in G.actors if a.team == 'A' and a.alive]; dfn = [a for a in G.actors if a.team == 'D' and a.alive]
+    G.carrier = G.pcar if (G.order == 'plant' and G.team == 'A' and G.pcar and G.pcar.alive) else (atk[0] if atk else None)
+    if b['planted']:
+        bots = [a for a in dfn if not human(a)]
+        G.defuser = min(bots, key=lambda a: math.hypot(a.x - b['pos'][0], a.y - b['pos'][1])) if bots else None
+    for a in G.actors:
+        if a.alive:
+            if human(a): player_update(a, dt)
+            else: bot_update(a, dt)
+    update_nades(dt); G.blind = max(0, G.blind - dt)
+    sp_ = G.oplan if (G.order == 'plant' and G.team == 'A') else G.plan
+    if not b['planted'] and G.exec_t is None:                       # attackers: stage, then execute together
+        bots_a = [a for a in atk if not human(a)]
+        ready = sum(1 for a in bots_a if math.hypot(a.x - STAGE[sp_][0], a.y - STAGE[sp_][1]) < 5)
+        if elapsed() > 8 and (ready >= max(1, len(bots_a) - 1) or elapsed() > 26 or G.order in ('goa', 'gob', 'plant')):
+            G.exec_t = G.t; team_util('A', sp_)
+    elif b['planted'] and not G.rt_exec and G.rt0 is not None and (G.t - G.rt0 > 7 or b['timer'] < 16):
+        G.rt_exec = True; team_util('D', b['site'])               # defenders: retake with utility
+    if not b['planted']:
+        if any(a.planting for a in atk): b['prog'] += dt
+        else: b['prog'] = 0
+        if b['prog'] >= PLANT_T:
+            c = next(a for a in atk if a.planting)
+            site = site_near(c.x, c.y); c.money = min(10000, c.money + 300)
+            b.update(planted=True, site=site, pos=SITES[site], timer=BOMB_TIME, prog=0)
+            G.msg = (f"POO POO PLANTED at the {SNAME[site]}!", 4); G.rt0 = G.t; G.rt_exec = False
+    else:
+        b['timer'] -= dt
+        b['defuse'] = b['defuse'] + dt * (1.7 if any(a.defusing and a.plunger for a in dfn) else 1) if any(a.defusing for a in dfn) else 0
+    if b['planted']:
+        if b['timer'] <= 0: G.flash = 1; end_round('A', "The Poo Poo went off!")
+        elif b['defuse'] >= DEFUSE_T: end_round('D', "Poo Poo flushed away!")
+        elif not dfn: end_round('A', "All cleaners are down!")
+    else:
+        if not atk: end_round('D', "All stinkers are down!")
+        elif not dfn: end_round('A', "All cleaners are down!")
+        elif G.round_time <= 0: end_round('D', "Time ran out!")
+
+# ------------------------------------------------------------------ drawing helpers
+def rect(c, x, y, w, h, br=0): pygame.draw.rect(screen, c, (int(x), int(y), max(1, int(w)), max(1, int(h))), border_radius=br)
+def ell(c, x, y, w, h): pygame.draw.ellipse(screen, c, (int(x), int(y), max(1, int(w)), max(1, int(h))))
+def circ(c, x, y, r): pygame.draw.circle(screen, c, (int(x), int(y)), max(1, int(r)))
+def txt(s, f, c, x, y, mid=False):
+    im = f.render(s, True, c); r = im.get_rect()
+    if mid: r.center = (x, y)
+    else: r.topleft = (x, y)
+    screen.blit(im, r)
+
+def paint_person(sx, gy, h, a):
+    shirt = ORANGE if a.team == 'A' else BLUE; w = h * .4
+    rect((50, 50, 75), sx - w * .42, gy - h * .4, w * .36, h * .4); rect((50, 50, 75), sx + w * .06, gy - h * .4, w * .36, h * .4)
+    rect(shirt, sx - w / 2, gy - h * .75, w, h * .38, int(h * .06))
+    circ((240, 200, 160), sx, gy - h * .86, h * .11)
+    rect(WEAPONS[a.w]['col'], sx - w * .8, gy - h * .64, w * .9, h * .07)
+    if a.flash > 0: circ((255, 240, 100), sx - w * .85, gy - h * .6, h * .07)
+    if a.team == G.team:
+        rect((180, 0, 0), sx - w / 2, gy - h * 1.03, w, 4); rect((0, 200, 0), sx - w / 2, gy - h * 1.03, w * max(0, a.hp) / 100, 4)
+
+def paint_toilet(sx, gy, h):
+    rect((240, 240, 245), sx - h * .3, gy - h, h * .6, h * .45, 4); ell((250, 250, 255), sx - h * .42, gy - h * .55, h * .84, h * .4)
+    ell((120, 170, 220), sx - h * .28, gy - h * .5, h * .56, h * .25); rect((235, 235, 240), sx - h * .2, gy - h * .2, h * .4, h * .2)
+    txt("A", FM, (30, 60, 140), sx, gy - h * 1.2, True)
+
+def paint_cake(sx, gy, h):
+    rect((90, 50, 25), sx - h * .7, gy - h * .55, h * 1.4, h * .55, 6); ell((130, 75, 40), sx - h * .7, gy - h * .7, h * 1.4, h * .3)
+    circ((230, 40, 80), sx, gy - h * .58, h * .09); rect((255, 240, 120), sx - 2, gy - h * .9, 4, h * .3)
+    txt("B", FM, (120, 60, 20), sx, gy - h * 1.15, True)
+
+def paint_poo(sx, gy, h):
+    for r, dy in ((.36, .3), (.26, .65), (.17, .92)): circ((110, 70, 30), sx, gy - h * dy, h * r)
+    circ((255, 255, 255), sx - h * .07, gy - h * .9, h * .05); circ((255, 255, 255), sx + h * .07, gy - h * .9, h * .05)
+    if int(G.t * 4) % 2: circ((255, 30, 30), sx, gy - h * 1.15, max(3, h * .08))
+
+def clipdraw(sx, wpx, depth, painter):
+    c0, c1 = max(0, int((sx - wpx / 2) // RES)), min(NR - 1, int((sx + wpx / 2) // RES)); run = None
+    for c in range(c0, c1 + 2):
+        vis = c <= c1 and ZB[c] > depth
+        if vis and run is None: run = c
+        elif not vis and run is not None:
+            screen.set_clip((run * RES, 0, (c - run) * RES, H)); painter(); run = None
+    screen.set_clip(None)
+
+TS = 64; LV = [1, .84, .7, .58, .47, .38]
+def dk(c, n): return tuple(max(0, v - n) for v in c)
+def lt(c, n): return tuple(min(255, v + n) for v in c)
+def _tex(fn):
+    s = pygame.Surface((TS, TS)); fn(s); out = []
+    for f in LV:
+        t = s.copy(); t.fill((int(255 * f),) * 3, special_flags=pygame.BLEND_MULT); out.append(t)
+    return out
+def skirt(s): pygame.draw.rect(s, (95, 62, 40), (0, TS - 9, TS, 9)); pygame.draw.rect(s, (140, 100, 70), (0, TS - 9, TS, 2))
+def t_stripes(c1, c2):
+    def f(s):
+        s.fill(c1)
+        for x in range(0, TS, 16): pygame.draw.rect(s, c2, (x, 0, 8, TS))
+        pygame.draw.rect(s, lt(c1, 30), (0, 34, TS, 3)); skirt(s)
+    return _tex(f)
+def t_dots(c1, c2):
+    def f(s):
+        s.fill(c1)
+        for y in range(6, TS - 9, 16):
+            for x in range(6 + (y // 16 % 2) * 8, TS, 16): pygame.draw.circle(s, c2, (x, y), 3)
+        skirt(s)
+    return _tex(f)
+def t_tiles(c, n):
+    def f(s):
+        s.fill((235, 235, 235))
+        for y in range(0, TS, n):
+            for x in range(0, TS, n):
+                pygame.draw.rect(s, c, (x + 1, y + 1, n - 2, n - 2)); pygame.draw.line(s, lt(c, 45), (x + 2, y + 2), (x + n - 3, y + 2))
+    return _tex(f)
+def t_planks(c):
+    def f(s):
+        s.fill(c)
+        for x in range(0, TS, 16):
+            pygame.draw.line(s, dk(c, 35), (x, 0), (x, TS))
+            for y in range(random.randrange(4, 20), TS - 9, 22): pygame.draw.line(s, dk(c, 18), (x + 3, y), (x + 12, y))
+        pygame.draw.rect(s, (240, 235, 220), (0, 0, TS, 4)); skirt(s)
+    return _tex(f)
+def t_cloth(c):
+    def f(s):
+        s.fill(c)
+        for y in range(0, TS, 4): pygame.draw.line(s, dk(c, 12), (0, y), (TS, y))
+        for x in (21, 42): pygame.draw.line(s, dk(c, 50), (x, 0), (x, TS), 2)
+        pygame.draw.rect(s, lt(c, 30), (0, 0, TS, 5))
+    return _tex(f)
+def t_wood(c):
+    def f(s):
+        s.fill(c)
+        for y in range(0, TS, 5): pygame.draw.line(s, dk(c, random.randrange(10, 35)), (0, y), (TS, y + random.randrange(-2, 3)))
+        pygame.draw.rect(s, lt(c, 30), (0, 0, TS, 4))
+    return _tex(f)
+def t_brick(c):
+    def f(s):
+        s.fill((205, 195, 185))
+        for r, y in enumerate(range(0, TS, 16)):
+            for x in range(-(r % 2) * 16, TS, 32): pygame.draw.rect(s, c, (x + 1, y + 1, 30, 14))
+    return _tex(f)
+def t_marble(c):
+    def f(s):
+        s.fill(c)
+        for _ in range(14): x = random.randrange(TS); pygame.draw.line(s, (170, 170, 185), (x, 0), (x + random.randrange(-20, 20), TS))
+    return _tex(f)
+TEXS = {'live': t_stripes((120, 150, 215), (138, 170, 232)), 'bed': t_dots((190, 140, 210), (220, 175, 238)), 'hall': t_planks((225, 205, 160)),
+        'kit': t_tiles((240, 205, 95), 16), 'din': t_stripes((235, 150, 150), (247, 180, 180)), 'bath': t_tiles((110, 205, 195), 8),
+        2: t_cloth((150, 105, 200)), 3: t_wood((160, 110, 65)), 4: t_tiles((170, 215, 240), 16), 5: t_marble((215, 215, 222)),
+        6: t_brick((170, 120, 95)), 7: t_cloth((240, 120, 160))}
+def tex_id(x, y):
+    v = grid[y][x]
+    if v != 1: return v
+    if x < 17: return 'live' if y >= 17 else 'bed'
+    if x < 30: return 'hall'
+    return 'kit' if y < 13 else 'din' if y < 21 else 'bath'
+TEXID = [[tex_id(x, y) for x in range(MW)] for y in range(MH)]
+SCOPE = pygame.Surface((W, H), pygame.SRCALPHA); SCOPE.fill((0, 0, 0, 255)); pygame.draw.circle(SCOPE, (0, 0, 0, 0), (W // 2, H // 2), 240)
+
+def set_res(r):
+    global RES, NR, ZB
+    RES = r; NR = W // r; ZB = [0.0] * NR
+
+def render(p):
+    px_, py_ = p.x + p.lx, p.y + p.ly
+    tanh = G.tanh; SC = TANH / tanh; e = .5 + G.z - G.crouch * .18; hz = H // 2 + int(G.pitch); K = H * SC
+    dx, dy = math.cos(p.ang), math.sin(p.ang); plx, ply = -dy * tanh, dx * tanh
+    for i in range(24):
+        k = i / 24; y0, y1 = int(hz * i / 24), int(hz * (i + 1) / 24) + 1
+        rect((int(215 - 65 * k), int(215 - 65 * k), int(235 - 55 * k)), 0, y0, W, y1 - y0)
+        f = i / 24; y0, y1 = hz + int((H - hz) * i / 24), hz + int((H - hz) * (i + 1) / 24) + 1
+        rect((int(95 + 95 * f), int(70 + 70 * f), int(48 + 55 * f)), 0, y0, W, y1 - y0)
+    for n in range(1, 26):
+        y = hz + int(K * e / (n * .8))
+        if hz < y < H: pygame.draw.line(screen, (88, 62, 40), (0, y), (W, y))
+    for c in range(NR):
+        cam = 2 * c / NR - 1; rdx, rdy = dx + plx * cam, dy + ply * cam
+        d, side, v, mx, my, lows = ray2(px_, py_, rdx, rdy); d = max(d, .05); ZB[c] = d
+        lh = int(K / d)
+        wx = (py_ + d * rdy) if side == 0 else (px_ + d * rdx); wx -= math.floor(wx); tx = int(wx * TS)
+        if (side == 0 and rdx > 0) or (side == 1 and rdy < 0): tx = TS - 1 - tx
+        tex = TEXS[TEXID[my][mx]][min(5, int(d / 3.6) + side)]
+        top = hz - int(lh * (1 - e)); vt, vb = max(0, top), min(H, top + lh)
+        if vb > vt:
+            sy0 = int((vt - top) * TS / lh); sy1 = max(sy0 + 1, int((vb - top) * TS / lh))
+            screen.blit(pygame.transform.scale(tex.subsurface((tx, sy0, 1, min(TS - sy0, sy1 - sy0))), (RES, vb - vt)), (c * RES, vt))
+        for dn, df, sd, lx, ly in reversed(lows):
+            dn = max(dn, .05); df = max(df if df else dn + 1, .05); hv = HGT[grid[ly][lx]]
+            yt, yb = hz + int((e - hv) * K / dn), hz + int(e * K / dn); sh = max(.35, 1 - dn / 22) * (.8 if sd else 1)
+            if e > hv:
+                y0 = hz + int((e - hv) * K / df); rect((int(205 * sh), int(170 * sh), int(115 * sh)), c * RES, y0, RES, max(1, yt - y0))
+            rect((int(150 * sh), int(105 * sh), int(65 * sh)), c * RES, yt, RES, max(1, yb - yt))
+    inv = 1.0 / (plx * dy - dx * ply); sp = []
+    def add(x, y, kind, obj):
+        sx, sy = x - px_, y - py_; ty = inv * (-ply * sx + plx * sy)
+        if ty > .15: sp.append((ty, inv * (dy * sx - dx * sy), kind, obj))
+    for a in G.actors:
+        if a.alive and a is not p: add(a.x, a.y, 'p', a)
+    add(*SITES['A'], 'A', None); add(*SITES['B'], 'B', None)
+    if G.bomb['planted']: add(*G.bomb['pos'], 'poo', None)
+    for n in G.nades: add(n['x'], n['y'], 'nade', n)
+    for s in G.smokes: add(s[0], s[1], 'smoke', s)
+    for f in G.fx: add(f[0], f[1], 'fx', f)
+    for ty, tx, kind, obj in sorted(sp, key=lambda s: -s[0]):
+        sx = int(W / 2 * (1 + tx / ty)); hp = K / ty; gy = hz + hp * e
+        if kind == 'p': h = hp * .78; clipdraw(sx, h * .45, ty, lambda: paint_person(sx, gy, h, obj))
+        elif kind == 'A': h = hp * .55; clipdraw(sx, h * .9, ty, lambda: paint_toilet(sx, gy, h))
+        elif kind == 'B': h = hp * .4; clipdraw(sx, h * 1.5, ty, lambda: paint_cake(sx, gy, h))
+        elif kind == 'poo': h = hp * .3; clipdraw(sx, h, ty, lambda: paint_poo(sx, gy - 4, h))
+        elif kind == 'nade': clipdraw(sx, hp * .3, ty, lambda: circ(UTIL[obj['kind']][2], sx, gy - hp * (.1 + (obj['arc'] * 4 * (1 - obj['left'] / obj['tot']) * (obj['left'] / obj['tot']) if obj['fly'] else 0)), max(3, hp * .1)))
+        elif kind == 'smoke':
+            r = obj[2]; clipdraw(sx, hp * r * 2.6, ty, lambda: [circ((236, 240, 250), sx + a_ * hp * r * .55, gy - hp * (.4 + b_ * .25), hp * r * .65) for a_, b_ in ((0, 0), (-.6, .1), (.6, .1), (0, .7))])
+        else: r = (.5 - obj[2]) * 5 + .3; clipdraw(sx, hp * r * 2, ty, lambda: circ(obj[3], sx, gy - hp * .3, hp * r))
+
+GUNS = {
+    0: [(0, .55, 70, 46, (60, 130, 235), 0), (.45, 1, 34, 24, (35, 80, 160), 0), (.1, .5, 40, 30, (150, 215, 255), 24), (0, .22, 36, 30, (240, 200, 60), -20)],
+    1: [(0, .6, 84, 54, (55, 170, 50), 0), (.55, 1, 38, 26, (35, 110, 35), 0), (.05, .55, 46, 34, (140, 255, 90), 28), (0, .2, 34, 28, (90, 220, 60), -36), (.75, .95, 10, 8, (30, 30, 30), 20)],
+    2: [(0, 1, 92, 58, (150, 100, 50), 0), (.88, 1, 66, 58, (80, 52, 28), 0), (.3, .65, 76, 62, (205, 155, 85), 16), (0, .2, 32, 26, (100, 70, 40), -34)],
+    3: [(0, .7, 100, 66, (250, 250, 255), 0), (.65, 1, 42, 34, (215, 215, 238), 0), (0, .22, 34, 28, (255, 120, 160), -24), (.1, .6, 60, 44, (235, 235, 250), 20)],
+    4: [(0, .3, 64, 46, (120, 40, 110), -6), (.2, .85, 46, 30, (255, 60, 180), 0), (.8, 1, 16, 12, (60, 60, 70), 0), (.3, .7, 30, 26, (40, 40, 60), 26), (.62, .7, 24, 20, (120, 200, 255), 26), (.3, .5, 32, 26, (255, 230, 60), -24)],
+}
+def seg(a, b, w0, w1, col, lift):
+    dx, dy = b[0] - a[0], b[1] - a[1]; L = math.hypot(dx, dy) or 1; nx, ny = -dy / L, dx / L
+    for grow, c in ((5, (25, 25, 35)), (0, col)):
+        pts = [(a[0] + nx * (w0 + grow) / 2, a[1] + ny * (w0 + grow) / 2 - lift), (b[0] + nx * (w1 + grow) / 2, b[1] + ny * (w1 + grow) / 2 - lift),
+               (b[0] - nx * (w1 + grow) / 2, b[1] - ny * (w1 + grow) / 2 - lift), (a[0] - nx * (w0 + grow) / 2, a[1] - ny * (w0 + grow) / 2 - lift)]
+        pygame.draw.polygon(screen, c, pts)
+    pygame.draw.line(screen, lt(col, 60), pts[0], pts[1], 3)
+
+GUNS[5] = [(0, .5, 66, 50, (90, 205, 255), 0), (.4, 1, 40, 30, (40, 120, 190), 0), (.05, .4, 40, 32, (255, 255, 255), 26), (0, .2, 32, 28, (200, 120, 40), -22), (.85, 1, 24, 22, (25, 25, 35), 0)]
+GUNS[6] = [(0, .55, 56, 40, (255, 200, 60), 0), (.5, 1, 28, 20, (200, 90, 40), 0), (.15, .45, 34, 26, (255, 120, 80), 22), (0, .2, 28, 24, (80, 80, 95), -24)]
+GUNS[7] = [(0, .35, 60, 46, (120, 90, 80), -8), (.25, .8, 56, 38, (255, 190, 220), 0), (.75, 1, 18, 14, (70, 70, 80), 0), (.3, .6, 36, 28, (255, 255, 255), 24), (.4, .55, 26, 22, (255, 150, 200), -26), (.55, .7, 12, 10, (250, 250, 250), 20)]
+
+def viewmodel(p):
+    ads = G.ads
+    if not p.alive or (p.w == 4 and ads > .85 and not p.held): return
+    t = pygame.time.get_ticks() / 1000
+    bob = math.sin(t * 9) * 5 * (1 - ads) if G.moving and G.jz <= .02 else math.sin(t * 1.6) * 2 * (1 - ads)
+    kick = p.recoil * 30; sp = G.sprint; eq = G.equip * 140; air = -G.jz * 80
+    prog = 1 - p.reload_t / RELOAD[p.w] if p.reload_t > 0 else 0; rl = 90 * math.sin(math.pi * prog) if prog else 0
+    n = [W // 2 + 270 - 230 * ads + 40 * sp, H + 110 + bob + kick + rl + eq + 30 * sp + air]
+    m = [W // 2 + 40 - 37 * ads + 90 * sp, H // 2 + 100 - 60 * ads + kick * .4 + rl * .5 + eq * .5 + 90 * sp + air]
+    L = math.hypot(m[0] - n[0], m[1] - n[1]) or 1; ux, uy = (m[0] - n[0]) / L, (m[1] - n[1]) / L; back = p.recoil * 26
+    n[0] -= ux * back; n[1] -= uy * back; m[0] -= ux * back; m[1] -= uy * back
+    n[0] -= G.lean * 60; m[0] -= G.lean * 60
+    pos = lambda t_: (n[0] + (m[0] - n[0]) * t_, n[1] + (m[1] - n[1]) * t_); sc = 1 - .3 * ads
+    seg((n[0] + 40, n[1] + 60), pos(.15), 120 * sc, 80 * sc, (70, 80, 125), -10)
+    if p.held:
+        x, y = pos(.5); circ((25, 25, 35), x, y, 40); circ(UTIL[p.held][2], x, y, 35); rect((200, 200, 210), x - 6, y - 52, 12, 18, 3); circ((240, 195, 155), x + 28, y + 18, 24)
+        return
+    for t0, t1, w0, w1, col, lift in GUNS[p.w]: seg(pos(t0), pos(t1), w0 * sc, w1 * sc, col, lift * sc)
+    if .15 < prog < .55: x, y = pos(.3); rect((60, 60, 70), x - 10, y + 30 + (prog - .15) * 400, 20, 36, 3)     # dropped magazine
+    for t0 in (.14, .55):
+        x, y = pos(t0); circ((25, 25, 35), x, y - 4, 26 * sc); circ((240, 195, 155), x, y - 4, 22 * sc)
+    if p.flash > 0:
+        x, y = pos(1); circ((255, 240, 120), x, y, 26); circ((255, 160, 40), x, y, 14)
+        if p.flash > .065:
+            for _ in range(8 if p.w == 3 else 3): G.parts.append([x, y, random.uniform(-260, 120) + (W // 2 - x) * 2, random.uniform(-340, -60), .45, PCOL.get(p.w, (255, 255, 255)), random.randint(3, 6)])
+    for q in G.parts[:]:
+        q[0] += q[2] * G.dt; q[1] += q[3] * G.dt; q[3] += 700 * G.dt; q[4] -= G.dt
+        if q[4] <= 0: G.parts.remove(q)
+        else: circ(q[5], q[0], q[1], q[6])
+
+def scope():
+    p = G.player
+    if p.w == 4 and G.ads > .5 and p.alive:
+        SCOPE.set_alpha(int(255 * min(1, (G.ads - .5) * 2))); screen.blit(SCOPE, (0, 0))
+        pygame.draw.line(screen, (0, 0, 0), (W // 2 - 240, H // 2), (W // 2 + 240, H // 2)); pygame.draw.line(screen, (0, 0, 0), (W // 2, H // 2 - 240), (W // 2, H // 2 + 240))
+
+def compass(p):
+    fov = math.atan(G.tanh)
+    for k, (x, y) in SITES.items():
+        a = angdiff(p.ang, math.atan2(y - p.y, x - p.x)); sx = int(W / 2 + max(-1.2, min(1.2, a / fov)) * (W / 2 - 40) / 1.2)
+        circ((20, 20, 30), sx, 112, 15); circ(ORANGE if k == 'A' else (120, 70, 30), sx, 112, 12)
+        txt(k, F, (255, 255, 255), sx, 112, True); txt(f"{int(math.hypot(x - p.x, y - p.y))}m", FS, (255, 255, 255), sx, 134, True)
+
+def minimap():
+    ox, oy = W - MW * 4 - 8, H - MH * 4 - 8; screen.blit(MM, (ox, oy))
+    p = G.player; mates = [a for a in G.actors if a.team == p.team and a.alive and not human(a)]
+    for a in G.actors:
+        if not a.alive: continue
+        if a.team != p.team and not (any(a in m.vis for m in mates) or (p.alive and can_see(p, a))): continue
+        circ(ORANGE if a.team == 'A' else BLUE, ox + a.x * 4, oy + a.y * 4, 3)
+    for k, (x, y) in SITES.items(): txt(k, FS, (255, 255, 255), ox + x * 4 - 4, oy + y * 4 - 7)
+    if G.bomb['planted']: circ((120, 70, 30), ox + G.bomb['pos'][0] * 4, oy + G.bomb['pos'][1] * 4, 4)
+    if p.alive:
+        circ((255, 255, 255), ox + p.x * 4, oy + p.y * 4, 3)
+        pygame.draw.line(screen, (255, 255, 255), (ox + p.x * 4, oy + p.y * 4), (ox + p.x * 4 + math.cos(p.ang) * 9, oy + p.y * 4 + math.sin(p.ang) * 9))
+
+def top_bars(dt):
+    b = G.bomb; rect((18, 18, 28), 0, 0, W, 84)
+    for team, x0, col in (('A', 14, ORANGE), ('D', W - 14 - 5 * 52, BLUE)):
+        for i, a in enumerate([a for a in G.actors if a.team == team]):
+            x = x0 + i * 52; rect(col if a.alive else (70, 70, 75), x, 6, 46, 30, 4)
+            txt(a.name[:5], FS, (20, 20, 20) if a.alive else (140, 140, 140), x + 23, 21, True)
+            rect((60, 20, 20), x, 40, 46, 6); rect((80, 230, 90) if a.alive else (60, 60, 60), x, 40, 46 * max(0, a.hp) / 100, 6)
+            if a is G.player: pygame.draw.rect(screen, (255, 255, 255), (x, 6, 46, 30), 2, 4)
+    rect((40, 40, 55), 402, 4, 156, 44, 6)
+    txt(f"{G.score['A']}", FM, ORANGE, 430, 10, True); txt(f"{G.score['D']}", FM, BLUE, 530, 10, True)
+    if G.state == 'buy': s, c = f"BUY  {int(G.timer) + 1}s", (255, 230, 120)
+    elif b['planted']: s, c = f"BOOM {max(0, b['timer']):.0f}s", (255, 70, 70)
+    else: s, c = f"{max(0, int(G.round_time)) // 60}:{max(0, int(G.round_time)) % 60:02d}", (255, 255, 255)
+    txt(s, F, c, 480, 36, True)
+    sa = sum(a.hp + a.armor * .5 for a in G.actors if a.team == 'A' and a.alive); sd = sum(a.hp + a.armor * .5 for a in G.actors if a.team == 'D' and a.alive)
+    if b['planted']: sa += 120 + (BOMB_TIME - b['timer']) * 3; sd += b['defuse'] * 60
+    G.adv += (sa / (sa + sd + 1e-6) - G.adv) * min(1, dt * 3)
+    bx, bw = 200, 560
+    rect(BLUE, bx, 54, bw, 12, 5); rect(ORANGE, bx, 54, bw * G.adv, 12, 5); rect((255, 255, 255), bx + bw / 2 - 1, 52, 2, 16)
+    txt("WHO'S WINNING THIS ROUND", FS, (255, 255, 255), W // 2, 60, True)
+    for team, x0, d, col in (('A', 330, -1, ORANGE), ('D', 630, 1, BLUE)):
+        for i in range(WIN_ROUNDS):
+            x = x0 + d * i * 22 - (18 if d < 0 else 0)
+            rect(col if i < G.score[team] else (70, 70, 80), x, 74, 18, 8, 3)
+    txt(f"FIRST TO {WIN_ROUNDS}", FS, (200, 200, 210), W // 2, 78, True)
+
+def equip(p, which):
+    p.reload_t = 0; G.equip = 1; p.charge = 0
+    if which == 'sec': p.w = p.sec; p.held = None
+    elif which == 'prim' and p.prim is not None: p.w = p.prim; p.held = None
+    elif which in UTIL and p.util.get(which, 0) > 0: p.held = which
+
+def open_wheel(kind):
+    p = G.player
+    if kind == 'weapon':
+        items = [(WEAPONS[p.sec]['n'], 'sec')]
+        if p.prim is not None: items.append((WEAPONS[p.prim]['n'], 'prim'))
+        for k, (nm, _, _) in UTIL.items():
+            if p.util.get(k, 0) > 0: items.append((f"{nm} x{p.util[k]}", k))
+    else:
+        items = [("Follow me", 'follow'), ("Cover me", 'cover'), ("Hold position", 'hold'), ("Go A - Toilet", 'goa'), ("Go B - Cake", 'gob'),
+                 ("Plant bomb" if p.team == 'A' else "Retake / Defuse", 'plant'), ("Fall back", 'fall'), ("Throw smoke", 'smoke')]
+    G.wheel, G.witems, G.wx, G.wy = kind, items, 0, 0
+
+def wheel_sel():
+    n = len(G.witems)
+    if math.hypot(G.wx, G.wy) < 35: return None
+    return int(((math.atan2(G.wy, G.wx) + math.pi / 2) % (2 * math.pi)) / (2 * math.pi) * n + .5) % n
+
+def close_wheel():
+    i = wheel_sel(); kind = G.wheel; G.wheel = None
+    if i is not None:
+        v = G.witems[i][1]
+        if kind == 'weapon': equip(G.player, v)
+        else: issue_order(v)
+
+def issue_order(c):
+    p = G.player; bots = [a for a in G.actors if a.team == p.team and a.alive and not human(a)]
+    if not bots: return
+    G.order = c; who = random.choice(bots).name; cs, sn = math.cos(p.ang), math.sin(p.ang)
+    say = {'follow': "Following you!", 'cover': "Covering you!", 'hold': "Holding here.", 'goa': "Heading to the toilet!", 'gob': "Heading to the cake!",
+           'plant': "Going for the plant!" if p.team == 'A' else "Retaking!", 'fall': "Falling back!", 'smoke': "Smoke out!"}[c]
+    if c == 'plant' and p.team == 'A':
+        G.oplan = site_near(p.x, p.y); G.pcar = min(bots, key=lambda a: math.hypot(a.x - SITES[G.oplan][0], a.y - SITES[G.oplan][1]))
+    if c == 'smoke':
+        d = max(1, min(12, ray(p.x, p.y, cs, sn)[0] - .5)); sm = [a for a in bots if a.util.get('bubble')]
+        if sm: sm[0].throw_req = (p.x + cs * d, p.y + sn * d); who = sm[0].name
+        else: say = "I have no smoke..."
+        G.order = None
+    G.feed.append([f"{who}: {say}", 4, (255, 255, 255)])
+
+def order_goal(a, g, mode):
+    o, p = G.order, G.player
+    if o in ('follow', 'cover') and p.alive:
+        if o == 'follow': t = (p.x - math.cos(p.ang) * 1.5 + math.cos(a.idx * 1.9) * 2, p.y - math.sin(p.ang) * 1.5 + math.sin(a.idx * 1.9) * 2)
+        else: t = (p.x + math.cos(p.ang + (a.idx - 2) * .5) * 3.5, p.y + math.sin(p.ang + (a.idx - 2) * .5) * 3.5)
+        return ((p.x, p.y) if solid(*t) else t), 'order'
+    if o == 'hold': return (a.x, a.y), 'hold'
+    if o == 'goa': return SPOTS['A'][a.idx % 5], 'cover'
+    if o == 'gob': return SPOTS['B'][a.idx % 5], 'cover'
+    if o == 'fall': return SPAWN[a.team][a.idx % 5], 'cover'
+    return g, mode
+
+def draw_wheel():
+    if not G.wheel: return
+    cx, cy, n, sel = W // 2, H // 2 + 10, len(G.witems), wheel_sel()
+    s = pygame.Surface((W, H), pygame.SRCALPHA); s.fill((0, 0, 0, 110)); screen.blit(s, (0, 0))
+    circ((30, 30, 45), cx, cy, 200); circ((50, 50, 70), cx, cy, 56)
+    for i, (lab, v) in enumerate(G.witems):
+        ang = -math.pi / 2 + i * 2 * math.pi / n; x, y = cx + math.cos(ang) * 135, cy + math.sin(ang) * 135
+        circ((255, 200, 60) if i == sel else (70, 70, 95), x, y, 50 if i == sel else 44)
+        txt(lab, FS, (20, 20, 20) if i == sel else (255, 255, 255), x, y, True)
+    circ((255, 255, 255), cx + G.wx * .4, cy + G.wy * .4, 6)
+    txt("WEAPONS" if G.wheel == 'weapon' else "COMMANDS", F, (255, 255, 255), cx, cy, True)
+
+def draw_topdown():
+    screen.fill((20, 20, 28)); ox, oy = 144, 92; screen.blit(MMB, (ox, oy))
+    for k, (x, y) in SITES.items(): txt(k, FM, (255, 255, 255), ox + x * 14, oy + y * 14, True)
+    if G.bomb['planted']: circ((120, 70, 30), ox + G.bomb['pos'][0] * 14, oy + G.bomb['pos'][1] * 14, 8)
+    for a in G.actors:
+        if a.alive:
+            circ(ORANGE if a.team == 'A' else BLUE, ox + a.x * 14, oy + a.y * 14, 7); txt(a.name, FS, (255, 255, 255), ox + a.x * 14, oy + a.y * 14 - 14, True)
+            pygame.draw.line(screen, (255, 255, 255), (ox + a.x * 14, oy + a.y * 14), (ox + a.x * 14 + math.cos(a.ang) * 16, oy + a.y * 14 + math.sin(a.ang) * 16))
+
+def hud(dt):
+    p = G.player; top_bars(dt)
+    if not (G.ads > .6 and p.w == 4) and p.alive: txt("+", FM, (80, 255, 80), W // 2, H // 2, True)
+    if G.hit > 0: txt("X", FM, (255, 60, 60), W // 2, H // 2 - 26, True)
+    if G.hs > 0: txt("HEADSHOT!", FM, (255, 80, 80), W // 2, H // 2 - 58, True)
+    txt(f"HP {max(0, int(p.hp))}   ARMOR {int(p.armor)}", F, (255, 255, 255), 20, H - 70)
+    nm = UTIL[p.held][0] if p.held else WEAPONS[p.w]['n']
+    txt(f"{nm}   ${p.money}", F, (255, 230, 120), 20, H - 44)
+    txt("RELOADING..." if p.reload_t > 0 else f"AMMO {p.ammo.get(p.w, 0)} / {p.res.get(p.w, 0)}", FM, (255, 255, 255), W // 2, H - 50, True)
+    txt("  ".join(f"{UTIL[k][0].split()[0]} x{n}" for k, n in p.util.items() if n), FS, (200, 255, 200), 20, H - 94)
+    y = 92
+    for f in G.feed: txt(f[0], FS, f[2], 12, y); y += 18
+    if G.msg[1] > 0: txt(G.msg[0], FM, (255, 255, 255), W // 2, 170, True)
+    if G.order: txt(f"ORDER: {G.order.upper()}", FS, (255, 230, 120), W // 2, 150, True)
+    b = G.bomb
+    if b['prog'] > 0 or b['defuse'] > 0:
+        v, m, c, l = (b['prog'], PLANT_T, (200, 130, 60), "PLANTING...") if b['prog'] > 0 else (b['defuse'], DEFUSE_T, (80, 160, 255), "FLUSHING...")
+        rect((50, 50, 50), W // 2 - 80, H - 130, 160, 16); rect(c, W // 2 - 80, H - 130, 160 * v / m, 16); txt(l, F, (255, 255, 255), W // 2, H - 145, True)
+    if p.alive and p.team == 'A' and not b['planted'] and any(math.hypot(p.x - x, p.y - y) < SITE_R for x, y in SITES.values()):
+        txt("Hold F to plant the Poo Poo!", F, (255, 230, 120), W // 2, H - 170, True)
+    if p.alive and p.team == 'D' and b['planted'] and math.hypot(p.x - b['pos'][0], p.y - b['pos'][1]) < 2:
+        txt("Hold F to flush the Poo Poo!", F, (120, 200, 255), W // 2, H - 170, True)
+    minimap(); compass(G.cam)
+    txt(zname(G.cam.x, G.cam.y), F, (255, 255, 255), W - MW * 4 - 8, H - MH * 4 - 30)
+    if G.dmg > 0:
+        s = pygame.Surface((W, H), pygame.SRCALPHA); s.fill((255, 0, 0, int(200 * G.dmg))); screen.blit(s, (0, 0))
+    if G.flash > 0 or G.blind > 0:
+        s = pygame.Surface((W, H), pygame.SRCALPHA); s.fill((255, 255, 220, int(255 * min(1, max(G.flash, G.blind))))); screen.blit(s, (0, 0))
+    draw_wheel(); draw_hitdir()
+
+def buy_menu():
+    s = pygame.Surface((600, 330), pygame.SRCALPHA); s.fill((20, 20, 30, 225)); screen.blit(s, (W // 2 - 300, 120))
+    p = G.player; txt(f"BUY PHASE   ${p.money}", FM, (255, 230, 120), W // 2, 148, True)
+    for r, (k, i) in enumerate((("1", 1), ("2", 2), ("3", 3), ("4", 4), ("5", 7), ("6", 5), ("7", 6))):
+        w = WEAPONS[i]; ok = p.money >= w['cost']
+        txt(f"[{k}] {w['n']} ${w['cost']}" + (" *" if i in (p.prim, p.sec) else ""), F, w['col'] if ok else (120, 120, 120), W // 2 - 280, 185 + r * 30)
+    for r, (lab, c, ok) in enumerate((("[8] Armor", 650, p.armor > 0), ("[9] Slime Grenade", 300, 0), ("[0] Bubble Smoke", 300, 0), ("[G] Glitter Bomb", 200, 0))):
+        key = {1: 'slime', 2: 'bubble', 3: 'glitter'}.get(r); n = p.util.get(key, 0) if key else 0
+        txt(f"{lab} ${c}" + (" *" if (ok or n) else "") + (f" x{n}" if n else ""), F, (200, 200, 255) if p.money >= c else (120, 120, 120), W // 2 + 30, 185 + r * 30)
+    txt("Secondary: 6-7   Primary: 1-5     [P] Plunger $400 (defenders: defuse 70% faster)" + (" *" if p.plunger else ""), FS, (200, 200, 210), W // 2, 400, True)
+    txt("Hold TAB = weapons   Hold Z = commands   Q/E = peek   ENTER = ready!", F, (255, 255, 255), W // 2, 430, True)
+
+MM = pygame.Surface((MW * 4, MH * 4))
+for _y in range(MH):
+    for _x in range(MW):
+        v = grid[_y][_x]; MM.fill((35, 35, 45) if v == 1 else (205, 205, 195) if v == 0 else (150, 110, 70), (_x * 4, _y * 4, 4, 4))
+
+MMB = pygame.transform.scale(MM, (MW * 14, MH * 14))
+
+def title():
+    screen.fill((30, 25, 45)); txt("POO POO STRIKE 3D", FB, (170, 120, 60), W // 2, 100, True)
+    for i, l in enumerate(["5v5  -  plant the Poo Poo at the TOILET or the CHOCOLATE CAKE, or flush it away!",
+                           "WASD move | mouse look | click shoot | RIGHT-CLICK aim | R reload | SPACE jump (climb stairs!)",
+                           "CTRL crouch | SHIFT sprint | Q/E peek around corners | hold F plant/defuse | 1/2 guns | 3/4/5 grenades",
+                           "Hold TAB = WEAPONS | Hold Z = COMMANDS | AIM = hold X or right-click | arrow keys look up/down",
+                           "GRENADES: 3/4/5 equip, hold click (or G) to charge, follow the guide line, release to throw, hold X = roll   F1 graphics  F2 bot level",
+                           "When dead: LEFT/RIGHT switch camera, V = free cam / top-down map     F1 = graphics quality", "",
+                           "Press  1  = play STINKERS (attack)       Press  2  = play CLEANERS (defend)"]):
+        txt(l, F, (230, 230, 240), W // 2, 190 + i * 34, True)
+
+# ------------------------------------------------------------------ main loop
+def main():
+    if SMOKE: start_match('A'); G.state = 'buy'
+    frames, ft = 0, []
+    BUYKEYS = {pygame.K_1: 1, pygame.K_2: 2, pygame.K_3: 3, pygame.K_4: 4, pygame.K_5: 7, pygame.K_6: 5, pygame.K_7: 6}
+    while True:
+        raw = 1 / 30 if SMOKE else min(clock.tick(60) / 1000, .05); dt = raw * (.2 if G.wheel else 1); G.dt = dt
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if e.type == pygame.KEYUP and G.wheel and e.key == (pygame.K_TAB if G.wheel == 'weapon' else pygame.K_z): close_wheel()
+            if e.type != pygame.KEYDOWN: continue
+            k = e.key
+            if k == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+            if k == pygame.K_F1: set_res(4 if RES >= 8 else RES + 2)
+            if k == pygame.K_F2: G.skill = {.9: 1.25, 1.25: 1.7, 1.7: .9}.get(G.skill, 1.25); G.msg = (f"Bot difficulty: {'EASY' if G.skill < 1 else 'NORMAL' if G.skill < 1.5 else 'HARD'}", 2.5)
+            if G.state == 'title':
+                if k in (pygame.K_1, pygame.K_2): start_match('A' if k == pygame.K_1 else 'D')
+                continue
+            p = G.player
+            if G.state == 'buy':
+                if k in BUYKEYS: buy(p, BUYKEYS[k])
+                elif k == pygame.K_8: buy_armor(p)
+                elif k == pygame.K_9: buy_util(p, 'slime')
+                elif k == pygame.K_0: buy_util(p, 'bubble')
+                elif k == pygame.K_g: buy_util(p, 'glitter')
+                elif k == pygame.K_p: buy_plunger(p)
+                elif k == pygame.K_RETURN: G.state = 'play'; pygame.mouse.get_rel()
+            elif G.state == 'play' and p.alive:
+                if k == pygame.K_1: equip(p, 'sec')
+                elif k == pygame.K_2: equip(p, 'prim')
+                elif k == pygame.K_3: equip(p, 'slime')
+                elif k == pygame.K_4: equip(p, 'bubble')
+                elif k == pygame.K_5: equip(p, 'glitter')
+                elif k == pygame.K_r: start_reload(p)
+                elif k == pygame.K_TAB: open_wheel('weapon')
+                elif k == pygame.K_z: open_wheel('cmd')
+            if G.state in ('play', 'end') and not p.alive:
+                if k == pygame.K_RIGHT: G.vi += 1
+                elif k == pygame.K_LEFT: G.vi -= 1
+                elif k == pygame.K_v:
+                    G.cammode = (G.cammode + 1) % 3; c = G.lastcam; G.free.x, G.free.y, G.free.ang = c.x, c.y, c.ang
+            if G.state == 'over' and k == pygame.K_r: G.state = 'title'; pygame.mouse.set_visible(True); pygame.event.set_grab(False)
+        if G.state == 'title': title(); pygame.display.flip(); continue
+        if SMOKE and G.state == 'buy': G.state = 'play'
+        p = G.player
+        G.dmg = max(0, G.dmg - dt); G.hit = max(0, G.hit - dt); G.hs = max(0, G.hs - dt); G.hitt = max(0, G.hitt - dt); G.flash = max(0, G.flash - dt * .5)
+        G.msg = (G.msg[0], G.msg[1] - dt); G.feed = [f for f in G.feed if (f.__setitem__(1, f[1] - dt) or f[1] > 0)]
+        if G.state == 'buy':
+            G.timer -= dt
+            if G.timer <= 0: G.state = 'play'; pygame.mouse.get_rel()
+            elif not SMOKE:
+                mx, my = pygame.mouse.get_rel(); p.ang += mx * .0028; G.pitch = max(-170, min(170, G.pitch - my * .8))
+        elif G.state == 'play': update_play(dt)
+        elif G.state == 'end':
+            G.timer -= dt
+            if not SMOKE: pygame.mouse.get_rel()
+            if G.timer <= 0:
+                if G.over: G.state = 'over'
+                else: new_round()
+        frames += 1
+        spec = (not p.alive) and G.state in ('play', 'end') and not SMOKE; cam = p
+        if spec:
+            G.z = G.jz = G.vz = G.crouch = 0; G.ads, G.tanh = 0, TANH
+            mx, my = pygame.mouse.get_rel(); G.pitch = max(-170, min(170, G.pitch - my * .8))
+            mates = [a for a in G.actors if a.team == p.team and a.alive]
+            if G.cammode == 0 and not mates: G.cammode = 1
+            if G.cammode == 0: G.vi %= len(mates); cam = mates[G.vi]
+            elif G.cammode == 1:
+                f = G.free; ks = pygame.key.get_pressed(); f.ang += mx * .0028
+                fw, sd = ks[pygame.K_w] - ks[pygame.K_s], ks[pygame.K_d] - ks[pygame.K_a]; sp = 8 * dt
+                try_move(f, (math.cos(f.ang) * fw - math.sin(f.ang) * sd) * sp, (math.sin(f.ang) * fw + math.cos(f.ang) * sd) * sp); cam = f
+        elif not (G.state == 'play' and p.alive and not SMOKE): G.ads, G.tanh = 0, TANH
+        G.lastcam = G.cam = cam
+        if SMOKE and frames % 40 and frames > 30:
+            if frames > 6000: print("SMOKE OK", G.score, G.state); return
+            continue
+        if spec and G.cammode == 2: draw_topdown()
+        else:
+            render(cam)
+            if p.alive: viewmodel(p); scope(); draw_guide(p)
+        hud(dt)
+        if spec: txt(f"SPECTATING {cam.name if cam is not G.free else 'free cam'}   (LEFT/RIGHT switch camera, V change view)" if G.cammode != 2 else "TOP-DOWN VIEW   (V change view)", F, (255, 255, 255), W // 2, H - 100, True)
+        if G.state == 'buy': buy_menu()
+        if G.state in ('end', 'over'):
+            txt(G.endmsg, FM, (255, 255, 255), W // 2, H // 2 - 20, True)
+            if G.state == 'over':
+                txt(("STINKERS" if G.score['A'] > G.score['D'] else "CLEANERS") + " WIN THE MATCH!  Press R", FB, (255, 220, 80), W // 2, H // 2 + 40, True)
+        pygame.display.flip()
+        if not SMOKE:
+            ft.append(raw)
+            if len(ft) >= 90:
+                if sum(ft) / len(ft) > .027 and RES < 8: set_res(RES + 2)
+                ft = []
+
+if __name__ == "__main__": main()
